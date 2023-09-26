@@ -62,6 +62,108 @@ def rejection_sampler(data, weights, rng, M=2, return_accepted_rows=False):
         return data_resampled, accepted_rows
     return data_resampled
 
+def bootstrapping_with_ace_linear(data_resampled, is_rct=False): 
+    """
+    Boostrap resample
+    Calculate parameteric backdoor within 
+    """
+    # Step 1: Use sample data from RCT 
+    # results in data_resampled
+
+    # Step 2: Bootstrapping: resample $S$ with replacement $b$ times.
+    NUM_BOOTSTRAP_SAMPLES = 1000 
+
+    def bootstrap_sample(dataframe):
+        return dataframe.sample(n=len(dataframe), replace=True)
+
+    all_sample_ace = []
+    for i in range(NUM_BOOTSTRAP_SAMPLES): 
+        boot_sample_df =  bootstrap_sample(data_resampled)
+
+        # Step 3: Calculate the ACE for each bootstrap sample. 
+        # RCT is just difference in means 
+        if is_rct: sample_ace = parametric_backdoor(boot_sample_df, "Y", "T", [])
+        # Otherwise, the parametric backdoor 
+        else: sample_ace = parametric_backdoor(boot_sample_df, "Y", "T", ["C", "T*C"])
+        all_sample_ace.append(sample_ace)
+
+    # Step 4: Use the percentile method to obtain 95% confidence intervals. 
+    all_sample_ace = np.array(all_sample_ace)
+    assert len(all_sample_ace) == NUM_BOOTSTRAP_SAMPLES
+    low = np.percentile(all_sample_ace, 2.5)
+    high = np.percentile(all_sample_ace, 97.5)
+
+    return {"boostrap_all_sample_ace": np.array(all_sample_ace), 
+            "ci_low_95": low, 
+            "ci_high_95": high, 
+            "ci_mean": np.mean(all_sample_ace)}
+
+def bootstrapping_three_methods(data, rct_ace, confound_func_params): 
+    """
+    Does bootstrap resampling for 
+    1. Original RCT data
+    2. RCT rejection sampling
+    3. Gentzel et al 
+
+    one *one* sample 
+
+    Then creates a boxplot 
+    """
+    rng = np.random.default_rng(100) 
+    # RCT data only 
+    rct_out = bootstrapping_with_ace_linear(data)
+
+    # Gentzel et al 
+    data_resampled = osrct_algorithm(data, rng, confound_func_params=confound_func_params)
+    gentzel_out =  bootstrapping_with_ace_linear(data_resampled, is_rct=True)
+
+    # RCT rejection sampling 
+    weights, p_TC, pT = weights_for_rejection_sampler(data, confound_func_params=confound_func_params)
+    M = np.max(p_TC) / np.min(pT)
+    data_resampled = rejection_sampler(data, weights, rng, M=M)
+    rejection_out =  bootstrapping_with_ace_linear(data_resampled)
+
+    data_out = {'RCT': rct_out, 'Gentzel':gentzel_out, 'Rejection': rejection_out}
+    return data_out
+
+def plot_bootstrap(data_out, rct_ace, title):
+    """
+    Plot the 95% CIs and their means 
+    """ 
+    method_order = ['RCT', 'Rejection', 'Gentzel']
+    labels = ['RCT', 'RCT rejection sampling', 'Gentzel et al']
+
+    # Unpack the data 
+    means, lower_cis, upper_cis = [], [], []
+    for method in method_order:
+        means.append(data_out[method]['ci_mean'])
+        lower_cis.append(data_out[method]['ci_low_95'])
+        upper_cis.append(data_out[method]['ci_high_95'])
+
+    # Calculate the error values (distance from the mean)
+    errors = [(mean - lower, upper - mean) for mean, lower, upper in zip(means, lower_cis, upper_cis)]
+    errors = list(zip(*errors))  # Transpose the list
+
+    # Plot the data with error bars
+    fig, ax = plt.subplots()
+    ax.errorbar(range(len(means)), means, yerr=errors, fmt='o', capsize=5, color='black')
+
+    # Styling and labels
+    ax.set_xticks(range(len(means)))
+    ax.set_xticklabels(labels)
+    ax.set_ylabel('ACE')
+    ax.set_title(title)
+
+    #Put in the true value 
+    ax.axhline(y=rct_ace, color='red', linewidth=2, label="True (RCT) ACE", linestyle='--')
+
+    ax.legend()
+
+    plt.tight_layout()
+    return fig, ax
+
+
+    
 
 def weights_for_rejection_sampler(data, confound_func_params={"para_form": "linear"}):
     """
