@@ -24,23 +24,43 @@ def synthetic_dgp(setting=1, num_samples=100000):
     #######################
     # DGP for RCT T->Y<-C
     ######################
+
+    # Setting 1 
+    # |C| = 1, P (T = 1) = 0.3
     if setting == 1: 
         C = rng_dgp.binomial(1, 0.5, num_samples)
         T = rng_dgp.binomial(1, 0.3, num_samples)
         Y = 0.5*C + 1.5*T + 2*T*C + rng_dgp.normal(0, 1, num_samples)
         data = pd.DataFrame({"C": C, "T": T, "Y": Y})
 
+    # Setting 2 
+    # |C| = 1, P (T = 1) = 0.5
     elif setting == 2: 
-        pass 
+        C = rng_dgp.binomial(1, 0.5, num_samples)
+        T = rng_dgp.binomial(1, 0.5, num_samples) #Set P(T=1)=0.5
+        Y = 0.5*C + 1.5*T + 2*T*C + rng_dgp.normal(0, 1, num_samples)
+        data = pd.DataFrame({"C": C, "T": T, "Y": Y}) 
 
+    # Setting 3 
+    # |C| = 5, Nonlinear
     elif setting == 3: 
-        pass 
+        C1 = rng_dgp.binomial(1, 0.5, num_samples)
+        C2 = C1 + rng_dgp.uniform(-0.5, 1, num_samples)
+        C3 = rng_dgp.normal(0, 1, num_samples)
+        C4 = rng_dgp.normal(0, 1, num_samples)
+        C5 = C3 + C4 + rng_dgp.normal(0, 1, num_samples)
+        T = rng_dgp.binomial(1, 0.3, num_samples)
+        Y = 0.5*C4 + 2*T*C1*C2 - 1.5*T + C2*C3 + C5 + rng_dgp.normal(0, 1, num_samples)
+        data = pd.DataFrame({"C1": C1, "C2": C2, "C3": C3, "C4": C4, "C5": C5, "T": T, "Y": Y})
+        print("RCT ACE", np.mean(data[data['T'] == 1]["Y"]) - np.mean(data[data['T'] == 0]["Y"])) 
 
     # perform some sanity checks
     # in the RCT data we should see unadjusted == adjusted 
     rct_ace =  parametric_backdoor(data, "Y", "T", [])
-    print("RCT ACE unadjusted", rct_ace)
-    print("RCT ACE adjusting for C", parametric_backdoor(data, "Y", "T", ["C", "T*C"]))
+
+    print("Sanity check")
+    print("RCT ACE unadjusted: ", rct_ace)
+    if setting != 3: print("RCT ACE adjusting for C parametric backdoor: ", parametric_backdoor(data, "Y", "T", ["C", "T*C"]))
     return data, rct_ace 
 
 
