@@ -14,6 +14,35 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 import matplotlib.pyplot as plt
 
+def synthetic_dgp(setting=1, num_samples=100000): 
+    """
+    Returns the data and RCT ACE for one of our three synthetic DGPs
+    """
+    #keep the random seed for the DGP distinct from the sampling seed 
+    rng_dgp = np.random.default_rng(0)
+
+    #######################
+    # DGP for RCT T->Y<-C
+    ######################
+    if setting == 1: 
+        C = rng_dgp.binomial(1, 0.5, num_samples)
+        T = rng_dgp.binomial(1, 0.3, num_samples)
+        Y = 0.5*C + 1.5*T + 2*T*C + rng_dgp.normal(0, 1, num_samples)
+        data = pd.DataFrame({"C": C, "T": T, "Y": Y})
+
+    elif setting == 2: 
+        pass 
+
+    elif setting == 3: 
+        pass 
+
+    # perform some sanity checks
+    # in the RCT data we should see unadjusted == adjusted 
+    rct_ace =  parametric_backdoor(data, "Y", "T", [])
+    print("RCT ACE unadjusted", rct_ace)
+    print("RCT ACE adjusting for C", parametric_backdoor(data, "Y", "T", ["C", "T*C"]))
+    return data, rct_ace 
+
 
 def osrct_algorithm(data, rng, confound_func_params={"para_form": "linear"}):
     """
@@ -62,34 +91,43 @@ def rejection_sampler(data, weights, rng, M=2, return_accepted_rows=False):
         return data_resampled, accepted_rows
     return data_resampled
 
-def bootstrapping_with_ace_linear(data_resampled, is_rct=False): 
+def bootstrapping_with_ace(data_resampled, is_rct=False, is_linear=True, num_bootstrap_samples=1000): 
     """
     Boostrap resample
-    Calculate parameteric backdoor within 
+    Calculate parameteric backdoor within
+
+    is_rct : True if its from the RCT data so we just use the difference in means 
+        estimator 
+
+    is_linear : indicates the DGP that we pass into the parametric backdoor 
+
+    num_bootstrap_samples: number of times to do bootstrap resampling 
     """
     # Step 1: Use sample data from RCT 
     # results in data_resampled
 
     # Step 2: Bootstrapping: resample $S$ with replacement $b$ times.
-    NUM_BOOTSTRAP_SAMPLES = 1000 
-
     def bootstrap_sample(dataframe):
         return dataframe.sample(n=len(dataframe), replace=True)
 
     all_sample_ace = []
-    for i in range(NUM_BOOTSTRAP_SAMPLES): 
+    for i in range(num_bootstrap_samples): 
         boot_sample_df =  bootstrap_sample(data_resampled)
 
         # Step 3: Calculate the ACE for each bootstrap sample. 
         # RCT is just difference in means 
         if is_rct: sample_ace = parametric_backdoor(boot_sample_df, "Y", "T", [])
         # Otherwise, the parametric backdoor 
-        else: sample_ace = parametric_backdoor(boot_sample_df, "Y", "T", ["C", "T*C"])
+        elif is_linear:
+            if check_invalid_sample(boot_sample_df): continue 
+            sample_ace = parametric_backdoor(boot_sample_df, "Y", "T", ["C", "T*C"])
+        else: #non-linear case 
+            sample_ace = parametric_backdoor(boot_sample_df, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
         all_sample_ace.append(sample_ace)
 
     # Step 4: Use the percentile method to obtain 95% confidence intervals. 
     all_sample_ace = np.array(all_sample_ace)
-    assert len(all_sample_ace) == NUM_BOOTSTRAP_SAMPLES
+    assert len(all_sample_ace) == num_bootstrap_samples
     low = np.percentile(all_sample_ace, 2.5)
     high = np.percentile(all_sample_ace, 97.5)
 
@@ -98,7 +136,21 @@ def bootstrapping_with_ace_linear(data_resampled, is_rct=False):
             "ci_high_95": high, 
             "ci_mean": np.mean(all_sample_ace)}
 
-def bootstrapping_three_methods(data, rct_ace, confound_func_params): 
+def cacluate_ci_coverage(boostrap_out, rct_ace): 
+    """
+    Returns 1 if the true (RCT) ACE is in the confidence interval 
+    Returns 0 otherwise 
+
+    bootstrap_out = {"boostrap_all_sample_ace": np.array(all_sample_ace), 
+            "ci_low_95": low, 
+            "ci_high_95": high, 
+            "ci_mean": np.mean(all_sample_ace)}
+    """
+    if boostrap_out["ci_low_95"] <= rct_ace <= boostrap_out["ci_high_95"]: 
+        return 1
+    else: return 0 
+
+def bootstrapping_three_methods_linear(data, rct_ace, confound_func_params): 
     """
     Does bootstrap resampling for 
     1. Original RCT data
@@ -111,17 +163,17 @@ def bootstrapping_three_methods(data, rct_ace, confound_func_params):
     """
     rng = np.random.default_rng(100) 
     # RCT data only 
-    rct_out = bootstrapping_with_ace_linear(data)
+    rct_out = bootstrapping_with_ace(data, is_rct=True, is_linear=True)
 
     # Gentzel et al 
     data_resampled = osrct_algorithm(data, rng, confound_func_params=confound_func_params)
-    gentzel_out =  bootstrapping_with_ace_linear(data_resampled, is_rct=True)
+    gentzel_out =  bootstrapping_with_ace(data_resampled, is_linear=True)
 
     # RCT rejection sampling 
     weights, p_TC, pT = weights_for_rejection_sampler(data, confound_func_params=confound_func_params)
     M = np.max(p_TC) / np.min(pT)
     data_resampled = rejection_sampler(data, weights, rng, M=M)
-    rejection_out =  bootstrapping_with_ace_linear(data_resampled)
+    rejection_out =  bootstrapping_with_ace(data_resampled, is_linear=True)
 
     data_out = {'RCT': rct_out, 'Gentzel':gentzel_out, 'Rejection': rejection_out}
     return data_out
