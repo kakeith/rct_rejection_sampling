@@ -6,7 +6,10 @@ Specifically:
 - (Ours) RCT rejection sampler 
 """
 import os
+from joblib import Parallel, delayed
+from copy import deepcopy
 import statsmodels.api as sm
+from collections import defaultdict
 import numpy as np
 import scipy.stats as stats
 from scipy.special import expit
@@ -520,17 +523,18 @@ def diagnostic_plot(data, zeta0_zeta1_list, savefig_name, num_seeds_one_setting=
     print("saved to:: ", savefig_name)
     return fig
 
-def one_seed(out, seed, data, rct_ace, confound_func_params, is_linear=True, 
+def one_seed(seed, data, rct_ace, confound_func_params, is_linear=True, 
                has_bootstrap=False, num_bootstrap_samples=1000): 
     """
     One random seed, both methods 
     """
+    out = defaultdict(list)
     rng = np.random.default_rng(seed)
 
     # OSRCT
     data_resampled = osrct_algorithm(data, rng, confound_func_params=confound_func_params)
     if is_linear:
-        if check_invalid_sample(data_resampled): return out 
+        if check_invalid_sample(data_resampled): return out
         sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
     else:
         sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
@@ -549,13 +553,12 @@ def one_seed(out, seed, data, rct_ace, confound_func_params, is_linear=True,
     M = np.max(p_TC) / np.min(pT)
     data_resampled = rejection_sampler(data, weights, rng, M=M)
     if is_linear:
-        if check_invalid_sample(data_resampled): return out 
+        if check_invalid_sample(data_resampled): return out
         sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
     else:
         sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
     abs_error = np.abs(sample_ace - rct_ace)
     out['all_abs_error_rejection'].append(abs_error)
-    out['all_data_resampled_rejection'].append(data_resampled)
 
     # Rejection Bootstrapping 
     if has_bootstrap: 
@@ -568,23 +571,27 @@ def one_seed(out, seed, data, rct_ace, confound_func_params, is_linear=True,
 def many_seeds(data, rct_ace, confound_func_params, is_linear=True, num_seeds=1000, 
                has_bootstrap=False, num_bootstrap_samples=1000, has_print_out=True,
                run_in_parallel=False, num_cores=20):
-    
-    out = {}
-    out['all_abs_error_obrct'] = []
-    out['all_abs_error_rejection'] = []
-    out['all_data_resampled_rejection'] = []
-
-    out['osrct_ci_coverage'] = []
-    out['rejection_ci_coverage'] = []
 
     if not run_in_parallel: 
         for seed in range(num_seeds):
-            out = one_seed(out, seed, data, rct_ace, confound_func_params, is_linear=is_linear, 
+            out = one_seed(seed, deepcopy(data), rct_ace, confound_func_params, is_linear=is_linear, 
                 has_bootstrap=has_bootstrap, num_bootstrap_samples=num_bootstrap_samples)
     
     # run in parallel, multiple cores 
     elif run_in_parallel: 
-        pass 
+        all_seeds_out = Parallel(n_jobs=num_cores, prefer="processes", verbose=5)(
+            delayed(one_seed)(seed, deepcopy(data), rct_ace, confound_func_params, is_linear=is_linear, 
+                has_bootstrap=has_bootstrap, num_bootstrap_samples=num_bootstrap_samples) for seed in range(num_seeds)
+        ) 
+        # put back into the correct format 
+        out = defaultdict(list)
+
+        for x in all_seeds_out: 
+            if len(x['all_abs_error_obrct']) == 0: continue # one of the "invalid" seeds
+            out['all_abs_error_obrct'].append(x['all_abs_error_obrct'][0])
+            out['all_abs_error_rejection'].append(x['all_abs_error_rejection'][0])
+            out['osrct_ci_coverage'].append(x['osrct_ci_coverage'][0])
+            out['rejection_ci_coverage'].append(x['rejection_ci_coverage'][0])
         
     # Print results
     if has_print_out: 
@@ -613,6 +620,7 @@ def many_seeds(data, rct_ace, confound_func_params, is_linear=True, num_seeds=10
         print(f"Num bootstrap samples={num_bootstrap_samples}")
         print("OSRCT CI Coverage: ", np.mean(out['osrct_ci_coverage']))
         print("Rejection CI Coverage:", np.mean(out['rejection_ci_coverage']))
+
     return out
 
 if __name__ == "__main__":
