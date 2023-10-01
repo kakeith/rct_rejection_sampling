@@ -520,9 +520,54 @@ def diagnostic_plot(data, zeta0_zeta1_list, savefig_name, num_seeds_one_setting=
     print("saved to:: ", savefig_name)
     return fig
 
+def one_seed(out, seed, data, rct_ace, confound_func_params, is_linear=True, 
+               has_bootstrap=False, num_bootstrap_samples=1000): 
+    """
+    One random seed, both methods 
+    """
+    rng = np.random.default_rng(seed)
+
+    # OSRCT
+    data_resampled = osrct_algorithm(data, rng, confound_func_params=confound_func_params)
+    if is_linear:
+        if check_invalid_sample(data_resampled): return out 
+        sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
+    else:
+        sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
+    abs_error = np.abs(sample_ace - rct_ace)
+    out['all_abs_error_obrct'].append(abs_error)
+
+    # OSRCT Bootstrapping 
+    if has_bootstrap: 
+        boot_out = bootstrapping_with_ace(data_resampled, is_rct=False, is_linear=is_linear, 
+                                            num_bootstrap_samples=num_bootstrap_samples)
+        ci_cov = cacluate_ci_coverage(boot_out, rct_ace)
+        out['osrct_ci_coverage'].append(ci_cov)
+
+    # Rejection
+    weights, p_TC, pT = weights_for_rejection_sampler(data, confound_func_params=confound_func_params)
+    M = np.max(p_TC) / np.min(pT)
+    data_resampled = rejection_sampler(data, weights, rng, M=M)
+    if is_linear:
+        if check_invalid_sample(data_resampled): return out 
+        sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
+    else:
+        sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
+    abs_error = np.abs(sample_ace - rct_ace)
+    out['all_abs_error_rejection'].append(abs_error)
+    out['all_data_resampled_rejection'].append(data_resampled)
+
+    # Rejection Bootstrapping 
+    if has_bootstrap: 
+        boot_out = bootstrapping_with_ace(data_resampled, is_rct=False, is_linear=is_linear, 
+                                            num_bootstrap_samples=num_bootstrap_samples)
+        ci_cov = cacluate_ci_coverage(boot_out, rct_ace)
+        out['rejection_ci_coverage'].append(ci_cov)
+    return out 
 
 def many_seeds(data, rct_ace, confound_func_params, is_linear=True, num_seeds=1000, 
-               has_bootstrap=False, num_bootstrap_samples=1000):
+               has_bootstrap=False, num_bootstrap_samples=1000, has_print_out=True,
+               run_in_parallel=False, num_cores=20):
     
     out = {}
     out['all_abs_error_obrct'] = []
@@ -532,73 +577,42 @@ def many_seeds(data, rct_ace, confound_func_params, is_linear=True, num_seeds=10
     out['osrct_ci_coverage'] = []
     out['rejection_ci_coverage'] = []
 
-    for seed in range(num_seeds):
-        rng = np.random.default_rng(seed)
-
-        # OSRCT
-        data_resampled = osrct_algorithm(data, rng, confound_func_params=confound_func_params)
-        if is_linear:
-            if check_invalid_sample(data_resampled): continue 
-            sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
-        else:
-            sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
-        abs_error = np.abs(sample_ace - rct_ace)
-        out['all_abs_error_obrct'].append(abs_error)
-
-        # OSRCT Bootstrapping 
-        if has_bootstrap: 
-            boot_out = bootstrapping_with_ace(data_resampled, is_rct=False, is_linear=is_linear, 
-                                              num_bootstrap_samples=num_bootstrap_samples)
-            ci_cov = cacluate_ci_coverage(boot_out, rct_ace)
-            out['osrct_ci_coverage'].append(ci_cov)
-
-        # Rejection
-        weights, p_TC, pT = weights_for_rejection_sampler(data, confound_func_params=confound_func_params)
-        M = np.max(p_TC) / np.min(pT)
-        data_resampled = rejection_sampler(data, weights, rng, M=M)
-        if is_linear:
-            if check_invalid_sample(data_resampled): continue 
-            sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
-        else:
-            sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
-        abs_error = np.abs(sample_ace - rct_ace)
-        out['all_abs_error_rejection'].append(abs_error)
-        out['all_data_resampled_rejection'].append(data_resampled)
-
-        # Rejection Bootstrapping 
-        if has_bootstrap: 
-            boot_out = bootstrapping_with_ace(data_resampled, is_rct=False, is_linear=is_linear, 
-                                              num_bootstrap_samples=num_bootstrap_samples)
-            ci_cov = cacluate_ci_coverage(boot_out, rct_ace)
-            out['rejection_ci_coverage'].append(ci_cov)
-
-
+    if not run_in_parallel: 
+        for seed in range(num_seeds):
+            out = one_seed(out, seed, data, rct_ace, confound_func_params, is_linear=is_linear, 
+                has_bootstrap=has_bootstrap, num_bootstrap_samples=num_bootstrap_samples)
+    
+    # run in parallel, multiple cores 
+    elif run_in_parallel: 
+        pass 
+        
     # Print results
-    print("OBRCT num invalid samples=", num_seeds - len(out['all_abs_error_obrct']))
-    print("Rejection num invalid samples=", num_seeds - len(out['all_abs_error_rejection']))
-    print()
+    if has_print_out: 
+        print("OBRCT num invalid samples=", num_seeds - len(out['all_abs_error_obrct']))
+        print("Rejection num invalid samples=", num_seeds - len(out['all_abs_error_rejection']))
+        print()
 
-    print(f"OBSRCT: MAE (over{num_seeds} random seeds)= ", np.mean(out['all_abs_error_obrct']))
-    print(f"\tOBSRCT: std AE (over{num_seeds} random seeds)= ", np.std(out['all_abs_error_obrct']))
-    print(f"OBSRCT: Relative MAE (over{num_seeds} random seeds)= ", np.mean(out['all_abs_error_obrct'] / np.abs(rct_ace)))
-    print(f"\tOBSRCT: Relative AE std (over{num_seeds} random seeds)= ", np.std(out['all_abs_error_obrct'] / np.abs(rct_ace)))
+        print(f"OBSRCT: MAE (over{num_seeds} random seeds)= ", np.mean(out['all_abs_error_obrct']))
+        print(f"\tOBSRCT: std AE (over{num_seeds} random seeds)= ", np.std(out['all_abs_error_obrct']))
+        print(f"OBSRCT: Relative MAE (over{num_seeds} random seeds)= ", np.mean(out['all_abs_error_obrct'] / np.abs(rct_ace)))
+        print(f"\tOBSRCT: Relative AE std (over{num_seeds} random seeds)= ", np.std(out['all_abs_error_obrct'] / np.abs(rct_ace)))
 
-    print()
-    print(f"Rejection: MAE (over {num_seeds} random seeds)= ", np.mean(out['all_abs_error_rejection']))
-    print(f"\tRejection: std AE (over {num_seeds} random seeds)= ", np.std(out['all_abs_error_rejection']))
-    print(
-        f"Rejection: Relative MAE (over{num_seeds} random seeds)= ", np.mean(out['all_abs_error_rejection'] / np.abs(rct_ace))
-    )
-    print(
-        f"\tRejection: Relative AE std (over{num_seeds} random seeds)= ",
-        np.std(out['all_abs_error_rejection'] / np.abs(rct_ace)),
-    )
+        print()
+        print(f"Rejection: MAE (over {num_seeds} random seeds)= ", np.mean(out['all_abs_error_rejection']))
+        print(f"\tRejection: std AE (over {num_seeds} random seeds)= ", np.std(out['all_abs_error_rejection']))
+        print(
+            f"Rejection: Relative MAE (over{num_seeds} random seeds)= ", np.mean(out['all_abs_error_rejection'] / np.abs(rct_ace))
+        )
+        print(
+            f"\tRejection: Relative AE std (over{num_seeds} random seeds)= ",
+            np.std(out['all_abs_error_rejection'] / np.abs(rct_ace)),
+        )
 
-    print()
-    print("=== CI Coverage === ")
-    print(f"Num bootstrap samples={num_bootstrap_samples}")
-    print("OSRCT CI Coverage: ", np.mean(out['osrct_ci_coverage']))
-    print("Rejection CI Coverage:", np.mean(out['rejection_ci_coverage']))
+        print()
+        print("=== CI Coverage === ")
+        print(f"Num bootstrap samples={num_bootstrap_samples}")
+        print("OSRCT CI Coverage: ", np.mean(out['osrct_ci_coverage']))
+        print("Rejection CI Coverage:", np.mean(out['rejection_ci_coverage']))
     return out
 
 if __name__ == "__main__":
