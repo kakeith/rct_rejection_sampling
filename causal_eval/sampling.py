@@ -206,7 +206,7 @@ def plot_bootstrap(data_out, rct_ace, title):
     Plot the 95% CIs and their means 
     """ 
     method_order = ['RCT', 'Rejection', 'Gentzel']
-    labels = ['RCT', 'RCT rejection sampling', 'Gentzel et al']
+    labels = ['RCT', 'RCT rejection sampling', 'Gentzel et al.']
 
     # Unpack the data 
     means, lower_cis, upper_cis = [], [], []
@@ -226,11 +226,11 @@ def plot_bootstrap(data_out, rct_ace, title):
     # Styling and labels
     ax.set_xticks(range(len(means)))
     ax.set_xticklabels(labels)
-    ax.set_ylabel('ACE')
+    ax.set_ylabel('ATE')
     ax.set_title(title)
 
     #Put in the true value 
-    ax.axhline(y=rct_ace, color='red', linewidth=2, label="True (RCT) ACE", linestyle='--')
+    ax.axhline(y=rct_ace, color='red', linewidth=2, label="True (RCT) ATE", linestyle='--')
 
     ax.legend()
 
