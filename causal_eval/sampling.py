@@ -6,13 +6,65 @@ Specifically:
 - (Ours) RCT rejection sampler 
 """
 import os
+from joblib import Parallel, delayed
+from copy import deepcopy
 import statsmodels.api as sm
+from collections import defaultdict
 import numpy as np
 import scipy.stats as stats
 from scipy.special import expit
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 import matplotlib.pyplot as plt
+
+def synthetic_dgp(setting=1, num_samples=100000): 
+    """
+    Returns the data and RCT ACE for one of our three synthetic DGPs
+    """
+    #keep the random seed for the DGP distinct from the sampling seed 
+    rng_dgp = np.random.default_rng(0)
+
+    #######################
+    # DGP for RCT T->Y<-C
+    ######################
+
+    # Setting 1 
+    # |C| = 1, P (T = 1) = 0.3
+    if setting == 1: 
+        C = rng_dgp.binomial(1, 0.5, num_samples)
+        T = rng_dgp.binomial(1, 0.3, num_samples)
+        Y = 0.5*C + 1.5*T + 2*T*C + rng_dgp.normal(0, 1, num_samples)
+        data = pd.DataFrame({"C": C, "T": T, "Y": Y})
+
+    # Setting 2 
+    # |C| = 1, P (T = 1) = 0.5
+    elif setting == 2: 
+        C = rng_dgp.binomial(1, 0.5, num_samples)
+        T = rng_dgp.binomial(1, 0.5, num_samples) #Set P(T=1)=0.5
+        Y = 0.5*C + 1.5*T + 2*T*C + rng_dgp.normal(0, 1, num_samples)
+        data = pd.DataFrame({"C": C, "T": T, "Y": Y}) 
+
+    # Setting 3 
+    # |C| = 5, Nonlinear
+    elif setting == 3: 
+        C1 = rng_dgp.binomial(1, 0.5, num_samples)
+        C2 = C1 + rng_dgp.uniform(-0.5, 1, num_samples)
+        C3 = rng_dgp.normal(0, 1, num_samples)
+        C4 = rng_dgp.normal(0, 1, num_samples)
+        C5 = C3 + C4 + rng_dgp.normal(0, 1, num_samples)
+        T = rng_dgp.binomial(1, 0.3, num_samples)
+        Y = 0.5*C4 + 2*T*C1*C2 - 1.5*T + C2*C3 + C5 + rng_dgp.normal(0, 1, num_samples)
+        data = pd.DataFrame({"C1": C1, "C2": C2, "C3": C3, "C4": C4, "C5": C5, "T": T, "Y": Y})
+        print("RCT ACE", np.mean(data[data['T'] == 1]["Y"]) - np.mean(data[data['T'] == 0]["Y"])) 
+
+    # perform some sanity checks
+    # in the RCT data we should see unadjusted == adjusted 
+    rct_ace =  parametric_backdoor(data, "Y", "T", [])
+
+    print("Sanity check")
+    print("RCT ACE unadjusted: ", rct_ace)
+    if setting != 3: print("RCT ACE adjusting for C parametric backdoor: ", parametric_backdoor(data, "Y", "T", ["C", "T*C"]))
+    return data, rct_ace 
 
 
 def osrct_algorithm(data, rng, confound_func_params={"para_form": "linear"}):
@@ -61,6 +113,129 @@ def rejection_sampler(data, weights, rng, M=2, return_accepted_rows=False):
     if return_accepted_rows:
         return data_resampled, accepted_rows
     return data_resampled
+
+def bootstrapping_with_ace(data_resampled, is_rct=False, is_linear=True, num_bootstrap_samples=1000): 
+    """
+    Boostrap resample
+    Calculate parameteric backdoor within
+
+    is_rct : True if its from the RCT data so we just use the difference in means 
+        estimator 
+
+    is_linear : indicates the DGP that we pass into the parametric backdoor 
+
+    num_bootstrap_samples: number of times to do bootstrap resampling 
+    """
+    # Step 1: Use sample data from RCT 
+    # results in data_resampled
+
+    # Step 2: Bootstrapping: resample $S$ with replacement $b$ times.
+    def bootstrap_sample(dataframe):
+        return dataframe.sample(n=len(dataframe), replace=True)
+
+    all_sample_ace = []
+    for i in range(num_bootstrap_samples): 
+        boot_sample_df =  bootstrap_sample(data_resampled)
+
+        # Step 3: Calculate the ACE for each bootstrap sample. 
+        # RCT is just difference in means 
+        if is_rct: sample_ace = parametric_backdoor(boot_sample_df, "Y", "T", [])
+        # Otherwise, the parametric backdoor 
+        elif is_linear:
+            if check_invalid_sample(boot_sample_df): continue 
+            sample_ace = parametric_backdoor(boot_sample_df, "Y", "T", ["C", "T*C"])
+        else: #non-linear case 
+            sample_ace = parametric_backdoor(boot_sample_df, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
+        all_sample_ace.append(sample_ace)
+
+    # Step 4: Use the percentile method to obtain 95% confidence intervals. 
+    all_sample_ace = np.array(all_sample_ace)
+    assert len(all_sample_ace) == num_bootstrap_samples
+    low = np.percentile(all_sample_ace, 2.5)
+    high = np.percentile(all_sample_ace, 97.5)
+
+    return {"boostrap_all_sample_ace": np.array(all_sample_ace), 
+            "ci_low_95": low, 
+            "ci_high_95": high, 
+            "ci_mean": np.mean(all_sample_ace)}
+
+def cacluate_ci_coverage(boostrap_out, rct_ace): 
+    """
+    Returns 1 if the true (RCT) ACE is in the confidence interval 
+    Returns 0 otherwise 
+
+    bootstrap_out = {"boostrap_all_sample_ace": np.array(all_sample_ace), 
+            "ci_low_95": low, 
+            "ci_high_95": high, 
+            "ci_mean": np.mean(all_sample_ace)}
+    """
+    if boostrap_out["ci_low_95"] <= rct_ace <= boostrap_out["ci_high_95"]: 
+        return 1
+    else: return 0 
+
+def bootstrapping_three_methods_linear(data, rct_ace, confound_func_params): 
+    """
+    Does bootstrap resampling for 
+    1. Original RCT data
+    2. RCT rejection sampling
+    3. Gentzel et al 
+
+    one *one* sample 
+
+    Then creates a boxplot 
+    """
+    rng = np.random.default_rng(100) 
+    # RCT data only 
+    rct_out = bootstrapping_with_ace(data, is_rct=True, is_linear=True)
+
+    # Gentzel et al 
+    data_resampled = osrct_algorithm(data, rng, confound_func_params=confound_func_params)
+    gentzel_out =  bootstrapping_with_ace(data_resampled, is_linear=True)
+
+    # RCT rejection sampling 
+    weights, p_TC, pT = weights_for_rejection_sampler(data, confound_func_params=confound_func_params)
+    M = np.max(p_TC) / np.min(pT)
+    data_resampled = rejection_sampler(data, weights, rng, M=M)
+    rejection_out =  bootstrapping_with_ace(data_resampled, is_linear=True)
+
+    data_out = {'RCT': rct_out, 'Gentzel':gentzel_out, 'Rejection': rejection_out}
+    return data_out
+
+def plot_bootstrap(data_out, rct_ace, title):
+    """
+    Plot the 95% CIs and their means 
+    """ 
+    method_order = ['RCT', 'Rejection', 'Gentzel']
+    labels = ['RCT', 'RCT rejection sampling', 'Gentzel et al.']
+
+    # Unpack the data 
+    means, lower_cis, upper_cis = [], [], []
+    for method in method_order:
+        means.append(data_out[method]['ci_mean'])
+        lower_cis.append(data_out[method]['ci_low_95'])
+        upper_cis.append(data_out[method]['ci_high_95'])
+
+    # Calculate the error values (distance from the mean)
+    errors = [(mean - lower, upper - mean) for mean, lower, upper in zip(means, lower_cis, upper_cis)]
+    errors = list(zip(*errors))  # Transpose the list
+
+    # Plot the data with error bars
+    fig, ax = plt.subplots()
+    ax.errorbar(range(len(means)), means, yerr=errors, fmt='o', capsize=5, color='black')
+
+    # Styling and labels
+    ax.set_xticks(range(len(means)))
+    ax.set_xticklabels(labels)
+    ax.set_ylabel('ATE')
+    ax.set_title(title)
+
+    #Put in the true value 
+    ax.axhline(y=rct_ace, color='red', linewidth=2, label="True (RCT) ATE", linestyle='--')
+
+    ax.legend()
+
+    plt.tight_layout()
+    return fig, ax
 
 
 def weights_for_rejection_sampler(data, confound_func_params={"para_form": "linear"}):
@@ -348,58 +523,105 @@ def diagnostic_plot(data, zeta0_zeta1_list, savefig_name, num_seeds_one_setting=
     print("saved to:: ", savefig_name)
     return fig
 
+def one_seed(seed, data, rct_ace, confound_func_params, is_linear=True, 
+               has_bootstrap=False, num_bootstrap_samples=1000): 
+    """
+    One random seed, both methods 
+    """
+    out = defaultdict(list)
+    rng = np.random.default_rng(seed)
 
-def many_seeds(data, rct_ace, confound_func_params, is_linear=True, num_seeds=1000):
-    all_abs_error_obrct = []
-    all_abs_error_rejection = []
-    all_data_resampled_rejection = []
+    # OSRCT
+    data_resampled = osrct_algorithm(data, rng, confound_func_params=confound_func_params)
+    if is_linear:
+        if check_invalid_sample(data_resampled): return out
+        sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
+    else:
+        sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
+    abs_error = np.abs(sample_ace - rct_ace)
+    out['all_abs_error_obrct'].append(abs_error)
 
-    for seed in range(num_seeds):
-        rng = np.random.default_rng(seed)
+    # OSRCT Bootstrapping 
+    if has_bootstrap: 
+        boot_out = bootstrapping_with_ace(data_resampled, is_rct=False, is_linear=is_linear, 
+                                            num_bootstrap_samples=num_bootstrap_samples)
+        ci_cov = cacluate_ci_coverage(boot_out, rct_ace)
+        out['osrct_ci_coverage'].append(ci_cov)
 
-        # OSRCT
-        data_resampled = osrct_algorithm(data, rng, confound_func_params=confound_func_params)
-        if is_linear:
-            if check_invalid_sample(data_resampled): continue 
-            sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
-        else:
-            sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
-        abs_error = np.abs(sample_ace - rct_ace)
-        all_abs_error_obrct.append(abs_error)
+    # Rejection
+    weights, p_TC, pT = weights_for_rejection_sampler(data, confound_func_params=confound_func_params)
+    M = np.max(p_TC) / np.min(pT)
+    data_resampled = rejection_sampler(data, weights, rng, M=M)
+    if is_linear:
+        if check_invalid_sample(data_resampled): return out
+        sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
+    else:
+        sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
+    abs_error = np.abs(sample_ace - rct_ace)
+    out['all_abs_error_rejection'].append(abs_error)
 
-        # Rejection
-        weights, p_TC, pT = weights_for_rejection_sampler(data, confound_func_params=confound_func_params)
-        M = np.max(p_TC) / np.min(pT)
-        data_resampled = rejection_sampler(data, weights, rng, M=M)
-        if is_linear:
-            if check_invalid_sample(data_resampled): continue 
-            sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C", "T*C"])
-        else:
-            sample_ace = parametric_backdoor(data_resampled, "Y", "T", ["C4", "T*C1*C2", "C2*C3", "C5"])
-        abs_error = np.abs(sample_ace - rct_ace)
-        all_abs_error_rejection.append(abs_error)
-        all_data_resampled_rejection.append(data_resampled)
+    # Rejection Bootstrapping 
+    if has_bootstrap: 
+        boot_out = bootstrapping_with_ace(data_resampled, is_rct=False, is_linear=is_linear, 
+                                            num_bootstrap_samples=num_bootstrap_samples)
+        ci_cov = cacluate_ci_coverage(boot_out, rct_ace)
+        out['rejection_ci_coverage'].append(ci_cov)
+    return out 
 
-    print("OBRCT num invalid samples=", num_seeds - len(all_abs_error_obrct))
-    print("Rejection num invalid samples=", num_seeds - len(all_abs_error_rejection))
-    print()
+def many_seeds(data, rct_ace, confound_func_params, is_linear=True, num_seeds=1000, 
+               has_bootstrap=False, num_bootstrap_samples=1000, has_print_out=True,
+               run_in_parallel=False, num_cores=20):
 
-    print(f"OBSRCT: MAE (over{num_seeds} random seeds)= ", np.mean(all_abs_error_obrct))
-    print(f"\tOBSRCT: std AE (over{num_seeds} random seeds)= ", np.std(all_abs_error_obrct))
-    print(f"OBSRCT: Relative MAE (over{num_seeds} random seeds)= ", np.mean(all_abs_error_obrct / np.abs(rct_ace)))
-    print(f"\tOBSRCT: Relative AE std (over{num_seeds} random seeds)= ", np.std(all_abs_error_obrct / np.abs(rct_ace)))
+    if not run_in_parallel: 
+        for seed in range(num_seeds):
+            out = one_seed(seed, deepcopy(data), rct_ace, confound_func_params, is_linear=is_linear, 
+                has_bootstrap=has_bootstrap, num_bootstrap_samples=num_bootstrap_samples)
+    
+    # run in parallel, multiple cores 
+    elif run_in_parallel: 
+        all_seeds_out = Parallel(n_jobs=num_cores, prefer="processes", verbose=5)(
+            delayed(one_seed)(seed, deepcopy(data), rct_ace, confound_func_params, is_linear=is_linear, 
+                has_bootstrap=has_bootstrap, num_bootstrap_samples=num_bootstrap_samples) for seed in range(num_seeds)
+        ) 
+        # put back into the correct format 
+        out = defaultdict(list)
 
-    print()
-    print(f"Rejection: MAE (over {num_seeds} random seeds)= ", np.mean(all_abs_error_rejection))
-    print(f"\tRejection: std AE (over {num_seeds} random seeds)= ", np.std(all_abs_error_rejection))
-    print(
-        f"Rejection: Relative MAE (over{num_seeds} random seeds)= ", np.mean(all_abs_error_rejection / np.abs(rct_ace))
-    )
-    print(
-        f"\tRejection: Relative AE std (over{num_seeds} random seeds)= ",
-        np.std(all_abs_error_rejection / np.abs(rct_ace)),
-    )
-    return all_abs_error_obrct, all_abs_error_rejection, all_data_resampled_rejection
+        for x in all_seeds_out: 
+            if len(x['all_abs_error_obrct']) == 0: continue # one of the "invalid" seeds
+            out['all_abs_error_obrct'].append(x['all_abs_error_obrct'][0])
+            out['all_abs_error_rejection'].append(x['all_abs_error_rejection'][0])
+            out['osrct_ci_coverage'].append(x['osrct_ci_coverage'][0])
+            out['rejection_ci_coverage'].append(x['rejection_ci_coverage'][0])
+        
+    # Print results
+    if has_print_out: 
+        print("OBRCT num invalid samples=", num_seeds - len(out['all_abs_error_obrct']))
+        print("Rejection num invalid samples=", num_seeds - len(out['all_abs_error_rejection']))
+        print()
+
+        print(f"OBSRCT: MAE (over{num_seeds} random seeds)= ", np.mean(out['all_abs_error_obrct']))
+        print(f"\tOBSRCT: std AE (over{num_seeds} random seeds)= ", np.std(out['all_abs_error_obrct']))
+        print(f"OBSRCT: Relative MAE (over{num_seeds} random seeds)= ", np.mean(out['all_abs_error_obrct'] / np.abs(rct_ace)))
+        print(f"\tOBSRCT: Relative AE std (over{num_seeds} random seeds)= ", np.std(out['all_abs_error_obrct'] / np.abs(rct_ace)))
+
+        print()
+        print(f"Rejection: MAE (over {num_seeds} random seeds)= ", np.mean(out['all_abs_error_rejection']))
+        print(f"\tRejection: std AE (over {num_seeds} random seeds)= ", np.std(out['all_abs_error_rejection']))
+        print(
+            f"Rejection: Relative MAE (over{num_seeds} random seeds)= ", np.mean(out['all_abs_error_rejection'] / np.abs(rct_ace))
+        )
+        print(
+            f"\tRejection: Relative AE std (over{num_seeds} random seeds)= ",
+            np.std(out['all_abs_error_rejection'] / np.abs(rct_ace)),
+        )
+
+        print()
+        print("=== CI Coverage === ")
+        print(f"Num bootstrap samples={num_bootstrap_samples}")
+        print("OSRCT CI Coverage: ", np.mean(out['osrct_ci_coverage']))
+        print("Rejection CI Coverage:", np.mean(out['rejection_ci_coverage']))
+
+    return out
 
 if __name__ == "__main__":
     """

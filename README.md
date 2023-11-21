@@ -16,9 +16,11 @@ This repository hosts the code and data to support the paper "RCT Rejection Samp
   - `ml_utils.py` - machine learning utility functions used by the causal estimation algorithms
   - `utils.py` - other general utility functions for the proof of concept pipeline
 - `scripts/` - scripts to reproduce the results in our paper
-  - `synthetic_experiments.ipynb`
-  - `subpopA_physics_medicine.ipynb`
-  - `subpopB_engineering_business.ipynb`
+  - `synthetic_experiments.ipynb` - creates plots
+  - `synthetic_with_ci_coverage.py` - Creates results for Table 2
+  - `subpopA_physics_medicine.ipynb` - Results for real-world dataset, subpopulation A 
+  - `subpopB_engineering_business.ipynb`- results for real-world dataset, subpopulation B 
+  - `synthetic_confounding_plot.ipynb` - script for plot in Appendix I 
 - `README.md`
 - `requirements.in`
 - `setup.py`
@@ -76,7 +78,7 @@ Columns:
 For the synthetic experiments (Table 2), run
 
 ```
-scripts/synthetic_experiments.ipynb
+scripts/synthetic_with_ci_coverage.py
 ```
 
 ### Proof of concept (real-world RCT)
