@@ -1,6 +1,6 @@
 # RCT Rejection Sampling
 
-This repository hosts the code and data to support the paper "RCT Rejection Sampling for Causal Estimation Evaluation" by Keith, Feldman, Jurgens, Bragg and Bhattacharya.
+This repository hosts the code and data to support the paper ["RCT Rejection Sampling for Causal Estimation Evaluation"](https://arxiv.org/abs/2307.15176) by Keith, Feldman, Jurgens, Bragg and Bhattacharya. Forthcoming in TMLR, 2024. 
 
 **Corresponding author**: Email Katie Keith, kak5@williams.edu
 
