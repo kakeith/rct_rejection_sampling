@@ -42,7 +42,7 @@ If you use this data or code, please cite our paper:
 ```
 git clone git@github.com:kakeith/rct_rejection_sampling.git
 cd rct_rejection_sampling/
-conda create -y --name evalEnv python==3.9
+conda create -y --name evalEnv python==3.9 -c conda-forge
 conda activate evalEnv
 pip install -r requirements.in
 pip install -e .
