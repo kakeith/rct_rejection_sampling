@@ -16,6 +16,12 @@ If you use this data or code, please cite our paper:
 
 **Corresponding author**: Email Katie Keith, kak5@williams.edu
 
+## Change Log 
+`2025-05-23`
+- Updated `requirements.in` with correct `scipy` version 
+- Updated `scripts/subpopA_physics_medicine.ipynb` and `scripts/subpopB_engineering_business.ipynb` with new cells 13-16 which save to disk the confounded datasets used in our proof of concept pipeline. 
+  - These saved datasets can now be found in `data/confounded/subpopA.pkl` and `data/confounded/subpopB.pkl`
+
 ## Repository outline
 
 - `data/`
