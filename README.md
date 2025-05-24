@@ -20,7 +20,10 @@ If you use this data or code, please cite our paper:
 `2025-05-23`
 - Updated `requirements.in` with correct `scipy` version 
 - Updated `scripts/subpopA_physics_medicine.ipynb` and `scripts/subpopB_engineering_business.ipynb` with new cells 13-16 which save to disk the confounded datasets used in our proof of concept pipeline. 
-  - These saved datasets can now be found in `data/confounded/subpopA.pkl` and `data/confounded/subpopB.pkl`
+  
+These saved confounded datasets can now be found in `data/confounded/subpopA.pkl.zip` and `data/confounded/subpopB.pkl.zip`. 
+
+To use these files, first unzip them and then look at cells 13-16 in `scripts/subpopA_physics_medicine.ipynb` and `scripts/subpopB_engineering_business.ipynb` for the file format and use. 
 
 ## Repository outline
 
